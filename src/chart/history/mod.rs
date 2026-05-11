@@ -1,20 +1,15 @@
-use crate::{Error, Result, error::LoginError};
-
 pub mod batch;
 pub mod single;
 
-/// Resolve authentication token from parameter or environment
-fn resolve_auth_token(auth_token: Option<&str>) -> Result<String> {
-    match auth_token {
-        Some(token) => Ok(token.to_string()),
-        None => {
-            tracing::warn!("No auth token provided, using environment variable");
-            std::env::var("TV_AUTH_TOKEN").map_err(|_| {
-                tracing::error!("TV_AUTH_TOKEN environment variable is not set");
-                Error::Login {
-                    source: LoginError::MissingAuthToken,
-                }
-            })
-        }
-    }
+/// Resolve authentication token from parameter or environment.
+/// Falls back to "unauthorized_user_token" when JWT is unavailable —
+/// session/signature cookie auth is handled separately in setup_websocket.
+fn resolve_auth_token(auth_token: Option<&str>) -> String {
+    auth_token
+        .map(|t| t.to_string())
+        .or_else(|| std::env::var("TV_AUTH_TOKEN").ok())
+        .unwrap_or_else(|| {
+            tracing::debug!("No TV_AUTH_TOKEN set, will rely on session/signature cookie auth");
+            "unauthorized_user_token".to_string()
+        })
 }

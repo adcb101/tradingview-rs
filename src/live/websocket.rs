@@ -9,7 +9,7 @@ use crate::{
         },
     },
     payload,
-    pine_indicator::PineIndicator,
+    pine_indicator::{PineIndicator, ScriptType},
     quote::{ALL_QUOTE_FIELDS, models::QuoteValue},
     utils::{gen_id, gen_session_id, parse_packet, symbol_init},
 };
@@ -31,12 +31,13 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::{Mutex, MutexGuard, RwLock},
     time::timeout,
 };
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async_with_config,
+    MaybeTlsStream, WebSocketStream, client_async_with_config, connect_async_with_config,
     tungstenite::{
         client::IntoClientRequest,
         protocol::{Message, WebSocketConfig},
@@ -126,6 +127,7 @@ pub struct WebSocketClient {
     pub server: DataServer,
     pub(crate) auth_token: Arc<RwLock<Ustr>>,
     pub(crate) quote_session: Arc<RwLock<Ustr>>,
+    pub(crate) user_cookies: Arc<RwLock<Option<crate::models::UserCookies>>>,
 
     data_handler: DataHandler,
     closed: CancellationToken,
@@ -136,6 +138,9 @@ pub struct WebSocketClient {
 
     read: Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
     write: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
+
+    // Pine indicator cache: avoids re-fetching the same script for every symbol
+    pine_cache: Arc<DashMap<(Ustr, Ustr, ScriptType), PineIndicator>>,
 
     // Error handling and recovery
     error_stats: ErrorStats,
@@ -158,12 +163,26 @@ impl WebSocketClient {
     #[builder]
     pub async fn new(
         auth_token: Option<&str>,
-        #[builder(default = DataServer::ProData)] server: DataServer,
+        #[builder(default = DataServer::Data)] server: DataServer,
         data_tx: DataTx,
+        session: Option<&str>,
+        signature: Option<&str>,
     ) -> Result<Arc<Self>> {
         let auth_token = Ustr::from(auth_token.unwrap_or("unauthorized_user_token"));
 
-        let (write, read) = Self::connect(server).await?;
+        let user_cookies = match (session, signature) {
+            (Some(s), Some(sig)) => Some(crate::models::UserCookies {
+                session: s.to_string(),
+                session_signature: sig.to_string(),
+                ..Default::default()
+            }),
+            _ => None,
+        };
+
+        let cookie = user_cookies.as_ref().map(|u| {
+            format!("sessionid={}; sessionid_sign={};", u.session, u.session_signature)
+        });
+        let (write, read) = Self::connect(server, cookie.as_deref()).await?;
 
         let data_handler = DataHandler::builder().res_tx(data_tx).build();
         let is_closed = Arc::new(AtomicBool::new(false));
@@ -173,6 +192,7 @@ impl WebSocketClient {
         let write = Arc::new(Mutex::new(write));
         let read = Arc::new(Mutex::new(read));
         let quote_session = Arc::new(RwLock::new(ustr("")));
+        let user_cookies = Arc::new(RwLock::new(user_cookies));
 
         let client = Arc::new(Self {
             data_handler,
@@ -185,8 +205,10 @@ impl WebSocketClient {
             series_count,
             studies_count,
             closed: CancellationToken::new(),
+            pine_cache: Arc::new(DashMap::new()),
             error_stats: ErrorStats::default(),
             error_config: ErrorRecoveryConfig::default(),
+            user_cookies,
         });
 
         Ok(client)
@@ -202,6 +224,7 @@ impl WebSocketClient {
 
     async fn connect(
         server: DataServer,
+        cookie: Option<&str>,
     ) -> Result<(
         SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
@@ -210,23 +233,155 @@ impl WebSocketClient {
             "wss://{server}.tradingview.com/socket.io/websocket"
         ))?;
 
-        let mut request = url.into_client_request()?;
-        request
-            .headers_mut()
-            .extend(WEBSOCKET_HEADERS.clone().into_iter());
+        let host = url.host_str().ok_or_else(|| Error::Internal("No host in URL".into()))?.to_owned();
+        let port = url.port().unwrap_or(443);
 
-        // Configure WebSocket with larger message size limits
+        let mut request = url.into_client_request()?;
+        let headers = request.headers_mut();
+        headers.extend(WEBSOCKET_HEADERS.clone().into_iter());
+        if let Some(c) = cookie {
+            headers.insert(
+                "Cookie",
+                c.parse().map_err(|e| Error::Internal(ustr(&format!("Invalid cookie header: {e}"))))?
+            );
+        }
+
         let conf = WebSocketConfig::default()
             .read_buffer_size(1024 * 1024)
             .write_buffer_size(1024 * 1024);
 
-        let (socket, response) = connect_async_with_config(request, Some(conf), false).await?;
+        let proxy_url = std::env::var("https_proxy").ok();
+
+        let (socket, response) = if let Some(ref proxy) = proxy_url {
+            info!("Connecting via proxy {proxy} to {host}:{port}");
+            let tls_stream = Self::proxy_connect(proxy, &host, port).await?;
+            client_async_with_config(request, tls_stream, Some(conf)).await?
+        } else {
+            connect_async_with_config(request, Some(conf), false).await?
+        };
 
         info!("WebSocket connected with status: {}", response.status());
 
         let (write, read) = socket.split();
 
         Ok((write, read))
+    }
+
+    /// Establish TLS tunnel via HTTP CONNECT proxy, returns MaybeTlsStream
+    #[cfg(feature = "rustls-tls")]
+    async fn proxy_connect(
+        proxy_url: &str,
+        target_host: &str,
+        target_port: u16,
+    ) -> Result<MaybeTlsStream<TcpStream>> {
+        use std::sync::Arc;
+        use rustls::pki_types::ServerName;
+
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+        let proxy = Url::parse(proxy_url)
+            .map_err(|e| Error::Internal(ustr(&e.to_string())))?;
+        let proxy_host = proxy.host_str().unwrap_or("127.0.0.1");
+        let proxy_port = proxy.port().unwrap_or(8080);
+
+        let mut tcp = TcpStream::connect(format!("{proxy_host}:{proxy_port}")).await?;
+
+        let connect_req = format!(
+            "CONNECT {target_host}:{target_port} HTTP/1.1\r\n\
+             Host: {target_host}:{target_port}\r\n\
+             Proxy-Connection: Keep-Alive\r\n\r\n"
+        );
+        tcp.write_all(connect_req.as_bytes()).await?;
+
+        let mut buf = vec![0u8; 4096];
+        let mut n = 0;
+        loop {
+            let read = tcp.read(&mut buf[n..]).await?;
+            n += read;
+            if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+            if n >= buf.len() {
+                return Err(Error::Internal(ustr("Proxy response too large")));
+            }
+        }
+
+        let response_str = String::from_utf8_lossy(&buf[..n]);
+        if !response_str.contains("200") {
+            return Err(Error::Internal(ustr(&format!(
+                "Proxy CONNECT failed: {response_str}"
+            ))));
+        }
+        info!("Proxy CONNECT succeeded");
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let domain = ServerName::try_from(target_host.to_owned())
+            .map_err(|e| Error::Internal(ustr(&format!("{e}"))))?;
+
+        connector
+            .connect(domain, tcp)
+            .await
+            .map(|tls| MaybeTlsStream::Rustls(tls))
+            .map_err(|e| Error::WebSocket(ustr(&format!("{e}"))))
+    }
+
+    /// Establish TLS tunnel via HTTP CONNECT proxy, returns MaybeTlsStream (native-tls)
+    #[cfg(all(feature = "native-tls", not(feature = "rustls-tls")))]
+    async fn proxy_connect(
+        proxy_url: &str,
+        target_host: &str,
+        target_port: u16,
+    ) -> Result<MaybeTlsStream<TcpStream>> {
+        let proxy = Url::parse(proxy_url)
+            .map_err(|e| Error::Internal(ustr(&e.to_string())))?;
+        let proxy_host = proxy.host_str().unwrap_or("127.0.0.1");
+        let proxy_port = proxy.port().unwrap_or(8080);
+
+        let mut tcp = TcpStream::connect(format!("{proxy_host}:{proxy_port}")).await?;
+
+        let connect_req = format!(
+            "CONNECT {target_host}:{target_port} HTTP/1.1\r\n\
+             Host: {target_host}:{target_port}\r\n\
+             Proxy-Connection: Keep-Alive\r\n\r\n"
+        );
+        tcp.write_all(connect_req.as_bytes()).await?;
+
+        let mut buf = vec![0u8; 4096];
+        let mut n = 0;
+        loop {
+            let read = tcp.read(&mut buf[n..]).await?;
+            n += read;
+            if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+            if n >= buf.len() {
+                return Err(Error::Internal(ustr("Proxy response too large")));
+            }
+        }
+
+        let response_str = String::from_utf8_lossy(&buf[..n]);
+        if !response_str.contains("200") {
+            return Err(Error::Internal(ustr(&format!(
+                "Proxy CONNECT failed: {response_str}"
+            ))));
+        }
+        info!("Proxy CONNECT succeeded");
+
+        let connector = tokio_native_tls::TlsConnector::from(
+            native_tls::TlsConnector::builder()
+                .build()
+                .map_err(|e| Error::Internal(ustr(&e.to_string())))?
+        );
+        connector
+            .connect(target_host, tcp)
+            .await
+            .map(|tls| MaybeTlsStream::NativeTls(tls))
+            .map_err(|e| Error::WebSocket(ustr(&format!("{e}"))))
     }
 
     /// Classify error severity for appropriate response
@@ -414,7 +569,10 @@ impl WebSocketClient {
 
     pub async fn reconnect(&self) -> Result<()> {
         let auth_token = self.auth_token.read().await;
-        let (write, read) = Self::connect(self.server).await?;
+        let cookie = self.user_cookies.read().await.as_ref().map(|u| {
+            format!("sessionid={}; sessionid_sign={};", u.session, u.session_signature)
+        });
+        let (write, read) = Self::connect(self.server, cookie.as_deref()).await?;
         let mut write_guard = self.write.lock().await;
         let mut read_guard = self.read.lock().await;
         *write_guard = write;
@@ -502,7 +660,9 @@ impl WebSocketClient {
     }
 
     pub async fn close(&self) -> Result<()> {
-        self.is_closed.store(true, Ordering::Relaxed);
+        if self.is_closed.swap(true, Ordering::Relaxed) {
+            return Ok(()); // already closed
+        }
         self.write.lock().await.close().await?;
         Ok(())
     }
@@ -893,9 +1053,26 @@ impl WebSocketClient {
 
         let study_id = Ustr::from(&format!("st{study_count}"));
 
-        let indicator = PineIndicator::build()
-            .fetch(&study.script_id, &study.script_version, study.script_type)
-            .await?;
+        let cache_key = (
+            Ustr::from(&study.script_id),
+            Ustr::from(&study.script_version),
+            study.script_type,
+        );
+        let indicator = if let Some(cached) = self.pine_cache.get(&cache_key) {
+            //info!("Using cached Pine indicator: {}", study.script_id);
+            cached.clone()
+        } else {
+            let user = self.user_cookies.read().await.clone();
+            let mut builder = PineIndicator::build();
+            if let Some(ref user) = user {
+                builder.user(user.clone());
+            }
+            let indicator = builder
+                .fetch(&study.script_id, &study.script_version, study.script_type)
+                .await?;
+            self.pine_cache.insert(cache_key, indicator.clone());
+            indicator
+        };
 
         let key = Ustr::from(&indicator.metadata.data.id);
 

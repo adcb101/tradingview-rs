@@ -80,7 +80,7 @@ pub async fn retrieve(
     #[builder(default = false)] with_replay: bool,
     #[builder(default = Duration::from_secs(30))] timeout_duration: Duration,
 ) -> Result<(SymbolInfo, Vec<DataPoint>)> {
-    let auth_token = resolve_auth_token(auth_token)?;
+    let auth_token = resolve_auth_token(auth_token);
     let range: Option<Ustr> = range.map(|r| r.into());
 
     let (symbol, exchange) = extract_symbol_exchange(ticker, symbol, exchange)?;
@@ -201,9 +201,14 @@ async fn setup_websocket(
     server: Option<DataServer>,
     data_tx: DataTx,
 ) -> Result<Arc<WebSocketClient>> {
+    let session = std::env::var("TV_SESSION").ok();
+    let signature = std::env::var("TV_SIGNATURE").ok();
+
     let websocket = WebSocketClient::builder()
-        .server(server.unwrap_or(DataServer::ProData))
+        .server(server.unwrap_or(DataServer::Data))
         .auth_token(auth_token)
+        .maybe_session(session.as_deref())
+        .maybe_signature(signature.as_deref())
         .data_tx(data_tx)
         .build()
         .await?;

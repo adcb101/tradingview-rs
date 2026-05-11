@@ -28,34 +28,32 @@ async fn main() -> anyhow::Result<()> {
             .bold()
     );
 
-    let auth_token = std::env::var("TV_AUTH_TOKEN").expect("TV_AUTH_TOKEN is not set");
+    let auth_token = std::env::var("TV_AUTH_TOKEN").ok();
+    let session = std::env::var("TV_SESSION").ok();
+    let signature = std::env::var("TV_SIGNATURE").ok();
 
-    let symbols = list_symbols()
-        .market_type(MarketType::Stocks(StocksType::Common))
-        .country(Country::VN)
-        .call()
-        .await?[0..15]
-        .to_vec();
-    // let symbols = vec![
-    //     Symbol::builder().symbol("XAUUSD").exchange("OANDA").build(),
-    //     Symbol::builder()
-    //         .symbol("SOLUSDT.P")
-    //         .exchange("OKX")
-    //         .build(),
-    //     Symbol::builder()
-    //         .symbol("DOGEUSDT.P")
-    //         .exchange("OKX")
-    //         .build(),
-    //     Symbol::builder()
-    //         .symbol("BNBUSDT.P")
-    //         .exchange("OKX")
-    //         .build(),
-    // ];
+    if auth_token.is_none() && (session.is_none() || signature.is_none()) {
+        anyhow::bail!("TV_AUTH_TOKEN or TV_SESSION+TV_SIGNATURE must be set");
+    }
+
+    // let symbols = list_symbols()
+    //     .market_type(MarketType::Stocks(StocksType::Common))
+    //     .country(Country::VN)
+    //     .call()
+    //     .await?[0..15]
+    //     .to_vec();
+    let symbols = vec![
+        Symbol::builder().symbol("XAUUSD").exchange("OANDA").build(),
+        Symbol::builder()
+            .symbol("BTCUSDT.P")
+            .exchange("OKX")
+            .build(),
+    ];
 
     assert!(!symbols.is_empty(), "No symbols found");
 
     let datamap = history::batch::retrieve()
-        .auth_token(&auth_token)
+        .maybe_auth_token(auth_token.as_deref())
         .symbols(&symbols)
         .interval(Interval::OneHour)
         .call()

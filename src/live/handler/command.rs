@@ -344,6 +344,8 @@ pub struct CommandRunnerConfig {
     pub heartbeat_interval: Duration,
     pub health_check_interval: Duration,
     pub command_timeout: Duration,
+    /// Use a longer timeout for commands that involve HTTP fetches (e.g., Pine indicator scripts)
+    pub study_fetch_timeout: Duration,
     pub reconnect_timeout: Duration,
     pub max_queue_size: usize,
     pub backoff_config: BackoffConfig,
@@ -356,6 +358,7 @@ impl Default for CommandRunnerConfig {
             heartbeat_interval: Duration::from_secs(30),
             health_check_interval: Duration::from_secs(5),
             command_timeout: Duration::from_secs(10),
+            study_fetch_timeout: Duration::from_secs(30),
             reconnect_timeout: Duration::from_secs(30),
             max_queue_size: 100,
             backoff_config: BackoffConfig::default(),
@@ -374,6 +377,7 @@ pub struct CommandRunner {
     reader_handle: Option<JoinHandle<()>>,
     config: CommandRunnerConfig,
     start_time: Instant,
+    cleaned_up: bool,
 }
 
 impl CommandRunner {
@@ -396,6 +400,7 @@ impl CommandRunner {
             reader_handle: None,
             config,
             start_time: Instant::now(),
+            cleaned_up: false,
         }
     }
 
@@ -640,7 +645,19 @@ impl CommandRunner {
     async fn process_command(&mut self, cmd: Command) -> Result<()> {
         use Command::*;
 
-        let result = timeout(self.config.command_timeout, async {
+        let is_study_fetch = matches!(&cmd, SetMarket { .. });
+        let effective_timeout = if is_study_fetch {
+            self.config.study_fetch_timeout
+        } else {
+            self.config.command_timeout
+        };
+        let timeout_msg = if is_study_fetch {
+            "Study fetch timeout"
+        } else {
+            "Command timeout"
+        };
+
+        let result = timeout(effective_timeout, async {
             match cmd {
                 Ping => self
                     .ws
@@ -878,7 +895,7 @@ impl CommandRunner {
         })
         .await;
 
-        result.unwrap_or_else(|_| Err(Error::Internal("Command timeout".into())))
+        result.unwrap_or_else(|_| Err(Error::Internal(timeout_msg.into())))
     }
 
     fn is_critical_command(&self, cmd: &Command) -> bool {
@@ -1031,7 +1048,12 @@ impl CommandRunner {
             JsonParse(_) | UrlParse(_) => ErrorSeverity::CommandOnly,
             Internal(msg) => {
                 let msg_lower = msg.to_lowercase();
-                if msg_lower.contains("timeout")
+                // Command-level timeouts don't indicate connection issues
+                if msg_lower.contains("command timeout")
+                    || msg_lower.contains("study fetch timeout")
+                {
+                    ErrorSeverity::CommandOnly
+                } else if msg_lower.contains("timeout")
                     || msg_lower.contains("connection")
                     || msg_lower.contains("network")
                 {
@@ -1066,18 +1088,20 @@ impl CommandRunner {
     }
 
     fn log_final_stats(&self) {
-        info!("CommandRunner final stats: {:?}", self.stats);
+        //info!("CommandRunner final stats: {:?}", self.stats);
     }
 
     #[instrument(skip(self))]
     async fn cleanup(&mut self) {
-        info!("Cleaning up CommandRunner");
+        if self.cleaned_up {
+            return;
+        }
+        self.cleaned_up = true;
+
+        //info!("Cleaning up CommandRunner");
 
         // Cancel shutdown token to stop all tasks
         self.shutdown.cancel();
-
-        // Stop reader task
-        self.stop_reader_task().await;
 
         let remaining_commands = self.command_queue.len();
         if remaining_commands > 0 {
@@ -1088,10 +1112,14 @@ impl CommandRunner {
             self.command_queue.clear();
         }
 
-        // Cleanup WebSocket with timeout
+        // Close WebSocket FIRST with a proper Close frame
+        // before stopping the reader task, to avoid TCP RST
         if let Err(e) = timeout(Duration::from_secs(5), self.ws.delete()).await {
             warn!("WebSocket cleanup timeout: {:?}", e);
         }
+
+        // Now stop reader task (socket already closed, it should exit quickly)
+        self.stop_reader_task().await;
     }
 
     // Public API methods

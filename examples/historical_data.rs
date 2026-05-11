@@ -24,10 +24,16 @@ async fn main() -> anyhow::Result<()> {
             .bold()
     );
 
-    let auth_token = std::env::var("TV_AUTH_TOKEN").expect("TV_AUTH_TOKEN is not set");
+    let auth_token = std::env::var("TV_AUTH_TOKEN").ok();
+    let session = std::env::var("TV_SESSION").ok();
+    let signature = std::env::var("TV_SIGNATURE").ok();
 
-    let symbol = "VCB";
-    let exchange = "HOSE";
+    if auth_token.is_none() && (session.is_none() || signature.is_none()) {
+        anyhow::bail!("TV_AUTH_TOKEN or TV_SESSION+TV_SIGNATURE must be set");
+    }
+
+   let symbol = "XAUUSD";
+    let exchange = "OANDA";
     let interval = Interval::OneHour;
 
     println!(
@@ -39,12 +45,12 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let (_info, data) = history::single::retrieve()
-        .auth_token(&auth_token)
+        .maybe_auth_token(auth_token.as_deref())
         .symbol(symbol)
         .exchange(exchange)
         .interval(interval)
         .with_replay(true)
-        .server(DataServer::ProData)
+        .server(DataServer::Data)
         .call()
         .await?;
 

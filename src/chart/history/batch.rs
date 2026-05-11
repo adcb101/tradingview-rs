@@ -224,9 +224,14 @@ async fn setup_websocket(
     server: Option<DataServer>,
     data_tx: DataTx,
 ) -> Result<Arc<WebSocketClient>> {
+    let session = std::env::var("TV_SESSION").ok();
+    let signature = std::env::var("TV_SIGNATURE").ok();
+
     let websocket = WebSocketClient::builder()
-        .server(server.unwrap_or(DataServer::ProData))
+        .server(server.unwrap_or(DataServer::Data))
         .auth_token(auth_token)
+        .maybe_session(session.as_deref())
+        .maybe_signature(signature.as_deref())
         .data_tx(data_tx)
         .build()
         .await?;
@@ -511,7 +516,7 @@ pub async fn retrieve(
         return Err(Error::Internal(ustr("No symbols provided")));
     }
 
-    let auth_token = resolve_auth_token(auth_token)?;
+    let auth_token = resolve_auth_token(auth_token);
     let symbol_count = symbols.len();
 
     tracing::info!("Starting batch retrieval for {} symbols", symbol_count);

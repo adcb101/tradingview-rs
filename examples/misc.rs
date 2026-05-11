@@ -3,6 +3,7 @@ use tradingview::pine_indicator::*;
 
 #[tokio::main]
 async fn main() {
+    dotenv::dotenv().ok();
     tracing_subscriber::fmt::init();
 
     // let indicators = get_builtin_indicators(BuiltinIndicators::Fundamental)

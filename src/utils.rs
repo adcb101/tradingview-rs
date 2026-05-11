@@ -56,6 +56,16 @@ pub fn build_request(cookie: Option<&str>) -> Result<reqwest::Client> {
         .default_headers(headers)
         .https_only(true)
         .user_agent(crate::UA);
+    // Read proxy environment variables
+    if let Ok(https_proxy) = std::env::var("https_proxy") {
+        if let Ok(proxy) = reqwest::Proxy::all(&https_proxy) {
+            client = client.proxy(proxy);
+        }
+    } else if let Ok(http_proxy) = std::env::var("http_proxy") {
+        if let Ok(proxy) = reqwest::Proxy::all(&http_proxy) {
+            client = client.proxy(proxy);
+        }
+    }
     #[cfg(feature = "rustls-tls")]
     {
         client = client.use_rustls_tls();

@@ -1,5 +1,5 @@
 use dotenv::dotenv;
-use std::{env, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::{
     sync::mpsc,
     time::{sleep, timeout},
@@ -27,7 +27,13 @@ async fn main() -> anyhow::Result<()> {
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    let auth_token = env::var("TV_AUTH_TOKEN").expect("TV_AUTH_TOKEN is not set");
+    let auth_token = std::env::var("TV_AUTH_TOKEN").ok();
+    let session = std::env::var("TV_SESSION").ok();
+    let signature = std::env::var("TV_SIGNATURE").ok();
+
+    if auth_token.is_none() && (session.is_none() || signature.is_none()) {
+        anyhow::bail!("TV_AUTH_TOKEN or TV_SESSION+TV_SIGNATURE must be set");
+    }
 
     // Create communication channels
     let (response_tx, response_rx) = mpsc::unbounded_channel();
@@ -37,8 +43,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Create WebSocket client
     let ws_client = WebSocketClient::builder()
-        .auth_token(&auth_token)
-        .server(DataServer::ProData)
+        .maybe_auth_token(auth_token.as_deref())
+        .maybe_session(session.as_deref())
+        .maybe_signature(signature.as_deref())
+        .server(DataServer::Data)
         .data_tx(response_tx)
         .build()
         .await?;

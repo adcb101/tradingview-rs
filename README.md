@@ -51,10 +51,9 @@ use tradingview::{DataServer, Interval, history};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let auth_token = std::env::var("TV_AUTH_TOKEN").expect("TV_AUTH_TOKEN is not set");
+    dotenv::dotenv().ok();
 
     let (_info, data) = history::single::retrieve()
-        .auth_token(&auth_token)
         .symbol("BTCUSDT")
         .exchange("BINANCE")
         .interval(Interval::OneHour)
@@ -75,15 +74,12 @@ use tradingview::{Interval, Symbol, history};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let auth_token = std::env::var("TV_AUTH_TOKEN").expect("TV_AUTH_TOKEN is not set");
-
     let symbols = vec![
         Symbol::builder().symbol("BTCUSDT").exchange("BINANCE").build(),
         Symbol::builder().symbol("ETHUSDT").exchange("BINANCE").build(),
     ];
 
     let datamap = history::batch::retrieve()
-        .auth_token(&auth_token)
         .symbols(&symbols)
         .interval(Interval::OneHour)
         .call()
@@ -141,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
 
 ```rust
 use dotenv::dotenv;
-use std::{env, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::sleep};
 use tradingview::{
     ChartOptions, Interval,
@@ -159,15 +155,19 @@ use tradingview::{
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
 
-    let auth_token = env::var("TV_AUTH_TOKEN").expect("TV_AUTH_TOKEN is not set");
+    let auth_token = std::env::var("TV_AUTH_TOKEN").ok();
+    let session = std::env::var("TV_SESSION").ok();
+    let signature = std::env::var("TV_SIGNATURE").ok();
 
     // Create communication channels
     let (response_tx, mut response_rx) = mpsc::unbounded_channel();
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-    // Create WebSocket client
+    // Create WebSocket client (supports JWT or session/signature auth)
     let ws_client = WebSocketClient::builder()
-        .auth_token(&auth_token)
+        .maybe_auth_token(auth_token.as_deref())
+        .maybe_session(session.as_deref())
+        .maybe_signature(signature.as_deref())
         .server(DataServer::ProData)
         .data_tx(response_tx)
         .build()
@@ -254,9 +254,10 @@ The [`examples/`](examples/) directory contains comprehensive examples:
 - [`historical_data.rs`](examples/historical_data.rs) - Fetch historical OHLCV data for a single symbol
 - [`historical_data_batch.rs`](examples/historical_data_batch.rs) - Batch historical data operations
 - [`historical_data_with_replay.rs`](examples/historical_data_with_replay.rs) - Historical data with replay mode
+- [`fetch_30b_stock.rs`](examples/fetch_30b_stock.rs) - Fetch Pine indicator data for multiple stocks
 - [`live.rs`](examples/live.rs) - Real-time market data via WebSocket
-- [`user.rs`](examples/user.rs) - User authentication and session management
 - [`indicator.rs`](examples/indicator.rs) - Working with Pine Script indicators
+- [`user.rs`](examples/user.rs) - User authentication and session management
 - [`search.rs`](examples/search.rs) - Symbol search and filtering
 - [`misc.rs`](examples/misc.rs) - Miscellaneous utility functions
 
@@ -276,13 +277,21 @@ cargo run --example search
 
 ### Environment Variables
 
-For examples requiring authentication, create a `.env` file:
+Create a `.env` file for authentication and optional proxy:
 
 ```env
+# Authentication — use either JWT or session/signature
+TV_AUTH_TOKEN=your_jwt_token              # JWT token (from user auth)
+TV_SESSION=your_session_id                # Session cookie
+TV_SIGNATURE=your_session_signature       # Session signature
+
+# Proxy (optional)
+https_proxy=http://127.0.0.1:49808        # HTTP CONNECT proxy for WebSocket & HTTP
+
+# For user authentication (optional)
 TV_USERNAME=your_username
 TV_PASSWORD=your_password
-TV_TOTP_SECRET=your_2fa_secret  # Optional, for 2FA
-TV_AUTH_TOKEN=your_auth_token   # Get from user authentication
+TV_TOTP_SECRET=your_2fa_secret
 ```
 
 ### Feature Flags
