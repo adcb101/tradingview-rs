@@ -1,0 +1,137 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug: live",
+      "cargo": {
+        "args": ["build", "--example=live", "--package=tradingview-rs"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMap": {}
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug: historical_data",
+      "cargo": {
+        "args": ["build", "--example=historical_data", "--package=tradingview-rs"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMap": {}
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug: historical_data_batch",
+      "cargo": {
+        "args": ["build", "--example=historical_data_batch", "--package=tradingview-rs"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMap": {}
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug: historical_data_with_replay",
+      "cargo": {
+        "args": ["build", "--example=historical_data_with_replay", "--package=tradingview-rs"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMap": {}
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug: indicator",
+      "cargo": {
+        "args": ["build", "--example=indicator", "--package=tradingview-rs"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMap": {}
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug: misc",
+      "cargo": {
+        "args": ["build", "--example=misc", "--package=tradingview-rs"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMap": {}
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug: search",
+      "cargo": {
+        "args": ["build", "--example=search", "--package=tradingview-rs"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMap": {}
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug: user",
+      "cargo": {
+        "args": ["build", "--example=user", "--package=tradingview-rs"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMap": {}
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Test: user_test",
+      "cargo": {
+        "args": ["test", "--test=user_test", "--package=tradingview-rs"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMap": {}
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Test: misc_test",
+      "cargo": {
+        "args": ["test", "--test=misc_test", "--package=tradingview-rs"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMap": {}
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Test: all",
+      "cargo": {
+        "args": ["test", "--all-features", "--package=tradingview-rs"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMap": {}
+    }
+  ]
+}
