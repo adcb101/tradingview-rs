@@ -74,6 +74,18 @@ pub struct ChartDrawingSourceStatePoint {
 pub struct UserCookies {
     pub id: u32,
     pub username: String,
+    #[serde(default, rename(deserialize = "first_name"))]
+    pub first_name: String,
+    #[serde(default, rename(deserialize = "last_name"))]
+    pub last_name: String,
+    #[serde(default)]
+    pub reputation: f64,
+    #[serde(default)]
+    pub following: u32,
+    #[serde(default)]
+    pub followers: u32,
+    #[serde(default, rename(deserialize = "notification_count"))]
+    pub notifications: UserNotifications,
     pub private_channel: String,
     pub auth_token: String,
     #[serde(default)]
@@ -83,6 +95,31 @@ pub struct UserCookies {
     pub session_hash: String,
     #[serde(default)]
     pub device_token: String,
+    #[serde(default, rename(deserialize = "date_joined"))]
+    pub join_date: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, Default)]
+pub struct UserNotifications {
+    #[serde(default)]
+    pub user: u32,
+    #[serde(default)]
+    pub following: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TAPeriod {
+    #[serde(default)]
+    pub other: f64,
+    #[serde(default)]
+    pub all: f64,
+    #[serde(default)]
+    pub ma: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TAResult {
+    pub periods: HashMap<String, TAPeriod>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

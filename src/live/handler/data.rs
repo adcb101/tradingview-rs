@@ -139,19 +139,14 @@ impl DataHandler {
     }
 
     async fn handle_study_data(&self, options: &StudyOptions, message_data: &Value) -> Result<()> {
-        // Pre-allocate vector if we know the capacity
         let studies_len = self.metadata.studies.len();
         if studies_len == 0 {
             return Ok(());
         }
 
         for study_entry in self.metadata.studies.iter() {
-            let (k, v) = study_entry.pair();
+            let (_k, v) = study_entry.pair();
             if let Some(resp_data) = message_data.get(v.as_str()) {
-                // Avoid debug logging in hot path unless explicitly enabled
-                if tracing::enabled!(tracing::Level::DEBUG) {
-                    debug!("study data received: {} - {:?}", k, resp_data);
-                }
                 let data = StudyResponseData::deserialize(resp_data)?;
                 (self.handler.on_study_data)((*options, data));
             }
@@ -193,11 +188,15 @@ impl DataHandler {
                 };
 
                 (self.handler.on_chart_data)(chart_data);
+            }
+        }
 
-                // Handle study data if present
-                if let Some(study_options) = &series_info.options.study_config {
-                    self.handle_study_data(study_options, message_data).await?;
-                }
+        // Handle study data independently from series data
+        // (study data may arrive in separate messages keyed by study_id)
+        for series_entry in self.metadata.series.iter() {
+            let (_id, series_info) = series_entry.pair();
+            if let Some(study_options) = &series_info.options.study_config {
+                self.handle_study_data(study_options, message_data).await?;
             }
         }
 

@@ -4,6 +4,7 @@ use crate::{
     error::Error,
     pine_indicator::{self, BuiltinIndicators, PineInfo, PineMetadata, PineSearchResult},
     utils::build_request,
+    TAPeriod, TAResult,
 };
 use bon::builder;
 use reqwest::Response;
@@ -456,6 +457,9 @@ pub async fn get_builtin_indicators(indicator_type: BuiltinIndicators) -> Result
 
 /// Searches for indicators on TradingView.
 ///
+/// Searches both built-in and community Pine Script indicators,
+/// combining the results like the official TradingView search.
+///
 /// # Arguments
 ///
 /// * `client` - An optional reference to a `UserCookies` object.
@@ -483,19 +487,88 @@ pub async fn search_indicator(
     search: &str,
     offset: i32,
 ) -> Result<Vec<PineSearchResult>> {
+    // Fetch built-in indicators for merging
+    let builtin_fut = async {
+        let standard = get_builtin_indicators(BuiltinIndicators::Standard).await;
+        let candlestick = get_builtin_indicators(BuiltinIndicators::Candlestick).await;
+        let fundamental = get_builtin_indicators(BuiltinIndicators::Fundamental).await;
+
+        let mut all = Vec::new();
+        if let Ok(v) = standard { all.extend(v); }
+        if let Ok(v) = candlestick { all.extend(v); }
+        if let Ok(v) = fundamental { all.extend(v); }
+        all
+    };
+
+    // Search community scripts
     let url = format!(
         "https://www.tradingview.com/pubscripts-suggest-json/?search={search}&offset={offset}",
     );
-    let resp: pine_indicator::SearchResponse = get(client, &url).await?.json().await?;
-    debug!("Response: {:?}", resp);
+    let community_fut = async {
+        match get(client, &url).await {
+            Ok(resp) => {
+                match resp.json::<pine_indicator::SearchResponse>().await {
+                    Ok(data) => data.results,
+                    Err(_) => Vec::new(),
+                }
+            }
+            Err(_) => Vec::new(),
+        }
+    };
 
-    if resp.results.is_empty() {
+    let (builtins, community) = tokio::join!(builtin_fut, community_fut);
+
+    fn norm(s: &str) -> String {
+        s.to_uppercase()
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .collect()
+    }
+
+    let search_norm = norm(search);
+
+    // Filter built-in indicators by search term match
+    let mut results = builtins
+        .into_iter()
+        .filter(|ind| {
+            norm(&ind.script_name).contains(&search_norm)
+                || norm(&ind.extra.short_description).contains(&search_norm)
+        })
+        .map(|ind| PineSearchResult {
+            script_id_part: ind.script_id,
+            version: ind.script_version,
+            script_name: ind.script_name,
+            author: pine_indicator::PineSearchAuthor {
+                id: ind.user_id,
+                username: Ustr::from("@TRADINGVIEW@"),
+                is_broker: false,
+            },
+            image_url: String::new(),
+            access: 1, // closed_source
+            script_source: String::new(),
+            extra: pine_indicator::PineSearchExtra {
+                kind: if ind.extra.kind.is_empty() {
+                    Some("study".into())
+                } else {
+                    Some(ind.extra.kind)
+                },
+                source_inputs_count: Some(ind.extra.source_inputs_count),
+                is_mtf_resolution: Some(ind.extra.is_mtf_resolution),
+            },
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+
+    // Merge community results
+    results.extend(community);
+
+    if results.is_empty() {
         return Err(Error::Internal(Ustr::from(
             "No indicators found for the given search query",
         )));
     }
 
-    Ok(resp.results)
+    Ok(results)
 }
 
 /// Retrieves metadata for a TradingView Pine indicator.
@@ -547,4 +620,82 @@ pub async fn get_indicator_metadata(
     Err(Error::Internal(Ustr::from(&format!(
         "Failed to retrieve metadata for Pine script ID: {pinescript_id}, Version: {pinescript_version}"
     ))))
+}
+
+/// Fetches technical analysis data for a given market symbol.
+///
+/// Calls TradingView's scanner API to get technical analysis recommendations
+/// across multiple timeframes.
+///
+/// # Arguments
+/// * `id` - Full market ID (e.g. "COINBASE:BTCEUR")
+///
+/// # Returns
+/// A `TAResult` containing per-timeframe advice (Other, All, MA indicators).
+#[tracing::instrument]
+pub async fn get_ta(id: &str) -> Result<TAResult> {
+    use std::collections::HashMap;
+
+    let indicators = ["Recommend.Other", "Recommend.All", "Recommend.MA"];
+    let timeframes = ["1", "5", "15", "60", "240", "1D", "1W", "1M"];
+
+    let mut columns: Vec<String> = Vec::new();
+    for t in &timeframes {
+        for i in &indicators {
+            if *t != "1D" {
+                columns.push(format!("{i}|{t}"));
+            } else {
+                columns.push(i.to_string());
+            }
+        }
+    }
+
+    let client = build_request(None)?;
+    let resp: serde_json::Value = client
+        .post("https://scanner.tradingview.com/global/scan")
+        .json(&serde_json::json!({
+            "symbols": { "tickers": [id] },
+            "columns": columns,
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    let data = resp
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first());
+
+    let Some(data) = data else {
+        return Err(Error::NoScanDataFound);
+    };
+
+    let values = data.get("d").and_then(|d| d.as_array());
+    let Some(values) = values else {
+        return Err(Error::NoScanDataFound);
+    };
+
+    let mut advice: HashMap<String, TAPeriod> = HashMap::new();
+
+    for (i, val) in values.iter().enumerate() {
+        let col = &columns[i];
+        let parts: Vec<&str> = col.split('|').collect();
+        let name = parts[0];
+        let period = if parts.len() > 1 { parts[1] } else { "1D" };
+        let p_name = period.to_string();
+
+        let v = val.as_f64().unwrap_or(0.0);
+        let score = (v * 1000.0).round() / 500.0;
+
+        let period_entry = advice.entry(p_name).or_default();
+        match name.split('.').next_back() {
+            Some("Other") => period_entry.other = score,
+            Some("All") => period_entry.all = score,
+            Some("MA") => period_entry.ma = score,
+            _ => {}
+        }
+    }
+
+    Ok(TAResult { periods: advice })
 }

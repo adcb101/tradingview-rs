@@ -16,11 +16,11 @@ path = "src/lib.rs"
 [features]
 default = ["user", "rustls-tls"]
 user = ["dep:google-authenticator"]
-native-tls = ["reqwest/native-tls", "tokio-tungstenite/native-tls"]
-rustls-tls = ["reqwest/rustls-tls", "tokio-tungstenite/rustls-tls-webpki-roots"]
+native-tls = ["reqwest/native-tls", "tokio-tungstenite/native-tls", "dep:tokio-native-tls"]
+rustls-tls = ["reqwest/rustls-tls", "tokio-tungstenite/rustls-tls-webpki-roots", "dep:tokio-rustls", "dep:webpki-roots", "dep:rustls"]
 
 [dependencies]
-tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
 reqwest = { version = "0.12", default-features = false, features = [
@@ -48,6 +48,10 @@ bon = "3"
 dashmap = { version = "6.1.0", features = ["rayon", "serde", "inline"] }
 ustr = { version = "1.1.0", features = ["serde"] }
 tokio-util = { version = "0.7.15", features = ["futures-util", "tracing"] }
+tokio-rustls = { version = "0.26", optional = true }
+webpki-roots = { version = "0.26", optional = true }
+tokio-native-tls = { version = "0.3", optional = true }
+rustls = { version = "0.23", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

@@ -253,7 +253,7 @@ pub fn create_handler(tx: Arc<DataTx>) -> TradingViewHandler {
         .on_unknown_event({
             let tx = tx.clone();
             Arc::new(Box::new(move |(event, values): (Ustr, Vec<Value>)| {
-                if let Err(e) = tx.send(TradingViewResponse::UnknownEvent(event.into(), values)) {
+                if let Err(e) = tx.send(TradingViewResponse::UnknownEvent(event, values)) {
                     tracing::error!("Failed to send UnknownEvent response: {}", e);
                 }
             }))
